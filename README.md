@@ -38,6 +38,46 @@
 
 邮箱筛选使用参数化条件 `split_part(user_email, '@', 1) = $1`。数据量较大时，可在视图对应的底层表评估相同表达式的索引；普通邮箱列索引不一定适用于此表达式，不能直接在普通视图上创建索引。
 
+
+## 数据库初始化配置
+创建 LiteLLM 预算视图
+如果你使用的是 LiteLLM 自带的数据库，需要手动在 litellm 数据库中创建一个自定义视图，供服务查询团队成员的预算数据。
+
+请在数据库中执行以下 SQL 语句：
+
+
+```shell
+CREATE OR REPLACE VIEW litellm.team_member_budget_view AS
+SELECT
+    t.team_id,
+    t.team_alias,
+    tm.user_id,
+    u.user_email,
+    tm.spend AS member_current_cycle_spend,
+    tm.total_spend AS member_total_spend,
+    COALESCE(b_member.max_budget, b_default.max_budget) AS member_max_budget,
+    CASE
+        WHEN b_member.max_budget IS NOT NULL THEN 'member_budget'::text
+        WHEN b_default.max_budget IS NOT NULL THEN 'team_default_member_budget'::text
+        ELSE 'unlimited_or_not_set'::text
+    END AS budget_source
+FROM (
+    (
+        (
+            "LiteLLM_TeamMembership" tm
+            JOIN "LiteLLM_TeamTable" t ON t.team_id = tm.team_id
+        )
+        LEFT JOIN "LiteLLM_UserTable" u ON u.user_id = tm.user_id
+    )
+    LEFT JOIN "LiteLLM_BudgetTable"* b_member ON b_member.budget_id = tm.budget_id
+)
+LEFT JOIN "LiteLLM_BudgetTable70" b_default
+    ON b_default.budget_id = (t.metadata ->> 'team_member_budget_id'::text)
+WHERE COALESCE(tm.user_id, ''::text) <> 'default_user_id'::text;
+
+```
+
+
 ## 配置
 
 服务通过环境变量读取配置：
