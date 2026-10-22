@@ -1,0 +1,7 @@
+.git
+.idea
+.env
+.env.*
+litellm-mcp-server
+README.md
+*_test.go
