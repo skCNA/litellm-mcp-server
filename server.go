@@ -40,15 +40,69 @@ func newMCPServer(pool budgetQuerier) *mcp.Server {
 	return server
 }
 
-func serveMCP(listenAddress, authToken string, pool *pgxpool.Pool) error {
-	mcpServer := newMCPServer(pool)
-	mcpHandler := mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return mcpServer },
-		&mcp.StreamableHTTPOptions{SessionTimeout: mcpSessionLimit},
-	)
+func newAdminMCPServer(pool budgetQuerier, admin *budgetAdminService) *mcp.Server {
+	server := newMCPServer(pool)
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "preview_member_budget_change",
+		Description: "预览指定团队普通成员的预算上限修改，不写入 LiteLLM。" +
+			"必须明确选择单成员或团队批量模式；仅支持现有独立预算，管理员、共享预算和歧义目标均拒绝。" +
+			"可选 reset_current_cycle_spend 默认 false，只有显式 true 才计划同时清零当前周期已消费金额；不会清空累计消费或修改周期。" +
+			"返回十分钟有效的 change_id、冻结成员名单、旧额度、新额度、清零选择和风险。必须向管理员完整展示并获得确认后才可调用执行工具。",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, admin.Preview)
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "apply_member_budget_change",
+		Description: "执行已经预览且经管理员明确确认的成员预算修改。" +
+			"默认只修改 max_budget，只有预览显式设置 reset_current_cycle_spend=true 才额外清零当前周期消费；不清空累计消费或修改周期、重置时间。" +
+			"额度修改和清零分步执行，可能部分成功；执行时不能改变预览中的清零选择。" +
+			"同一 change_id 不重复提交；结果不确定时必须人工核查，不能自行生成新计划重试。",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(true)},
+	}, admin.Apply)
+	return server
+}
+
+func boolPointer(value bool) *bool { return &value }
+
+func newAuthenticatedMCPHandler(readToken, writeToken string, pool budgetQuerier, admin *budgetAdminService) http.Handler {
+	handlerFor := func(server *mcp.Server) http.Handler {
+		return mcp.NewStreamableHTTPHandler(
+			func(*http.Request) *mcp.Server { return server },
+			&mcp.StreamableHTTPOptions{SessionTimeout: mcpSessionLimit},
+		)
+	}
+	readHandler := bearerAuth(readToken, handlerFor(newMCPServer(pool)))
+	var writeHandler http.Handler
+	if admin != nil {
+		writeHandler = bearerAuth(writeToken, handlerFor(newAdminMCPServer(pool, admin)))
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		scheme, credential, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+		// 两套处理器隔离会话，不能通过只读令牌借用管理员的会话编号调用写工具。
+		if writeHandler != nil && ok && strings.EqualFold(scheme, "Bearer") &&
+			subtle.ConstantTimeCompare([]byte(credential), []byte(writeToken)) == 1 {
+			writeHandler.ServeHTTP(w, r)
+			return
+		}
+		readHandler.ServeHTTP(w, r)
+	})
+}
+
+func serveMCP(listenAddress, authToken string, pool *pgxpool.Pool, config *adminConfig) error {
+	var admin *budgetAdminService
+	writeToken := ""
+	if config != nil {
+		var err error
+		admin, err = config.service(pool)
+		if err != nil {
+			return fmt.Errorf("初始化预算管理失败: %w", err)
+		}
+		writeToken = config.token
+		log.Print("预算管理已启用，写工具仅对独立管理令牌开放")
+	}
 
 	mux := http.NewServeMux()
-	mux.Handle(mcpEndpoint, bearerAuth(authToken, mcpHandler))
+	mux.Handle(mcpEndpoint, newAuthenticatedMCPHandler(authToken, writeToken, pool, admin))
 
 	httpServer := &http.Server{
 		Addr:              listenAddress,

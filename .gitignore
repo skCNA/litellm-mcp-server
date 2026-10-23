@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+.changes/
+data/
+litellm-mcp-server
+coverage.out

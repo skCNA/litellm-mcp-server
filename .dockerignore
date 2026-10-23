@@ -5,3 +5,6 @@
 litellm-mcp-server
 README.md
 *_test.go
+.changes
+data
+coverage.out

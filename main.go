@@ -31,6 +31,10 @@ func run() error {
 	if len(authToken) < authTokenMinLength {
 		return fmt.Errorf("环境变量 MCP_AUTH_TOKEN 至少需要 %d 字节", authTokenMinLength)
 	}
+	admin, err := loadAdminConfig(authToken)
+	if err != nil {
+		return err
+	}
 
 	listenAddress := os.Getenv("MCP_ADDR")
 	if listenAddress == "" {
@@ -50,5 +54,5 @@ func run() error {
 		return fmt.Errorf("连接 PostgreSQL 失败: %w", err)
 	}
 
-	return serveMCP(listenAddress, authToken, pool)
+	return serveMCP(listenAddress, authToken, pool, admin)
 }

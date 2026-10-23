@@ -1,6 +1,6 @@
 # LiteLLM MCP Server
 
-通过 MCP Streamable HTTP 向 Claude Code、OpenClaw 等客户端提供 LiteLLM 团队成员预算查询工具。
+通过 MCP Streamable HTTP 向 Claude Code、OpenClaw 等客户端提供 LiteLLM 团队成员预算查询和受控修改工具。默认只读，配置独立管理凭证后才能预览和执行预算修改。
 
 ## 提供的工具
 
@@ -39,6 +39,70 @@
 邮箱筛选使用参数化条件 `split_part(user_email, '@', 1) = $1`。数据量较大时，可在视图对应的底层表评估相同表达式的索引；普通邮箱列索引不一定适用于此表达式，不能直接在普通视图上创建索引。
 
 
+### `preview_member_budget_change`
+
+生成有效期为 10 分钟的修改预览，不写入 LiteLLM。只处理已经有独立预算的现有普通成员（`role=user`），排除管理员及 `default_user_id`。
+
+| 参数 | 必须 | 说明 |
+| --- | --- | --- |
+| `team_alias` | 是 | 精确匹配唯一团队；别名对应多个团队时拒绝 |
+| `scope` | 是 | `member` 修改一个成员；`team_members` 修改团队现有普通成员 |
+| `user_email` | 单成员模式 | 完整邮箱或完整邮箱前缀；匹配多个用户时拒绝；批量模式禁止提供 |
+| `max_budget` | 是 | 每个目标成员的新额度，必须为有限正数，不超过管理员配置上限 |
+| `reset_current_cycle_spend` | 否 | 布尔值，默认 `false`；`true` 表示修改额度时同时清零当前周期已消费金额 `spend`，不是将预算上限设为零 |
+
+单成员示例：
+
+```json
+{"team_alias":"backend","scope":"member","user_email":"bob","max_budget":50}
+```
+
+整个团队普通成员示例：
+
+```json
+{"team_alias":"backend","scope":"team_members","max_budget":50}
+```
+
+修改单个成员额度并同时清零本周期消费：
+
+```json
+{"team_alias":"backend","scope":"member","user_email":"bob","max_budget":50,"reset_current_cycle_spend":true}
+```
+
+团队批量模式也支持这个开关，对预览确定的每位普通成员生效。省略或传 `false` 时完全保留原行为，不检查或调用清零接口；即使新旧额度相同，传 `true` 仍会执行清零。
+
+返回 `change_id`、到期时间、冻结的目标名单、旧额度、新额度、当前消费、原周期、重置时间及清零选择；新额度不高于已消费金额时给出风险提示。每位成员的 `target_current_cycle_spend` 在选择清零时为 `0`，否则为 `null`。一次最多 100 位成员；超出限制时整体拒绝，不截断名单。批量中任一目标缺少独立预算、使用团队默认共享预算，或预算仍被其他实体引用，均不生成计划。
+
+### `apply_member_budget_change`
+
+先向管理员展示预览，获得明确确认后再调用：
+
+```json
+{"change_id":"替换为预览返回的编号","confirm":true}
+```
+
+仅接受预览编号和确认标记，不接受新的目标、额度或清零开关；清零选择必须在预览时确定并由管理员确认。预览首次执行前会检查过期时间和当前额度上限；逐成员重新验证普通成员身份、预算关联、共享引用以及预算配置。执行中的普通消费增长不构成配置冲突；本次预览之后加入团队的新成员不在目标名单内。
+
+额度写入调用 LiteLLM `POST /team/member_update`，请求体只有 `team_id`、`user_id`、`max_budget_in_team`。选择清零时，先确认额度生效，再调用 `POST /team/{team_id}/member/{user_id}/reset_spend`，请求体固定为 `{"reset_to":0}`。不直接更新数据库；不清空累计消费 `total_spend`，不修改周期、重置时间、角色、团队总预算、用户全局预算或未来成员默认值；不提供零额度、无限额和清空预算上限操作。
+
+返回的每个成员都有独立 `status`：
+
+| 状态 | 含义 |
+| --- | --- |
+| `pending` | 仅生成预览，尚未提交 |
+| `applied` | 新额度与原有其他配置已确认；未选择清零时消费计数未下降，选择清零时额外确认清零及累计消费未下降 |
+| `unchanged` | 原额度相同，没有发送写请求 |
+| `partial` | 额度已确认，但清零尚未提交，例如两步之间调用被取消或进程中断 |
+| `conflict` | 配置、身份、关联已变化，或安全检查无法完成，没有提交该成员 |
+| `unconfirmed` | 请求可能已经生效，但回读无法确认；必须人工核查 |
+| `skipped` | 前项存在冲突、结果不确定、调用取消或进程中断，该成员未提交 |
+
+每位成员同时返回 `budget_confirmed`（是否已确认额度）、`reset_status`（`not_requested`、`pending`、`skipped`、`confirmed` 或 `unconfirmed`）以及最近一次成功回读的 `observed_current_cycle_spend`。清零失败时额度可能已经生效，需要分别检查两项结果。
+
+`state=done` 只表示这次执行已结束，不代表所有成员都成功。遇到冲突、部分完成或未确认结果会停止后续成员；已成功的操作不会自动回滚。额度更新与清零是两次 HTTP 操作，不具备原子性。
+
+变更记录绑定管理令牌的摘要与 LiteLLM 地址。重复执行同一 `change_id` 返回持久化结果，不重复写入或清零；进程中断后，重试同一编号只回读可能已提交的操作，不继续尚未开始的清零或成员。清零成功回执会持久化，因此清零后正常新增消费不要求再次回到零。若回执丢失且回读消费不为零，则无法确认，不能推断为失败并重新清零。请求超时不等于写入失败；不要让模型通过新建计划自动重试 `partial` 或 `unconfirmed` 项，否则可能清掉后来新增的消费。
+
 ## 数据库初始化配置
 创建 LiteLLM 预算视图
 如果你使用的是 LiteLLM 自带的数据库，需要手动在 litellm 数据库中创建一个自定义视图，供服务查询团队成员的预算数据。
@@ -46,8 +110,8 @@
 请在数据库中执行以下 SQL 语句：
 
 
-```shell
-CREATE OR REPLACE VIEW litellm.team_member_budget_view AS
+```sql
+CREATE OR REPLACE VIEW public.team_member_budget_view AS
 SELECT
     t.team_id,
     t.team_alias,
@@ -69,9 +133,9 @@ FROM (
         )
         LEFT JOIN "LiteLLM_UserTable" u ON u.user_id = tm.user_id
     )
-    LEFT JOIN "LiteLLM_BudgetTable"* b_member ON b_member.budget_id = tm.budget_id
+    LEFT JOIN "LiteLLM_BudgetTable" b_member ON b_member.budget_id = tm.budget_id
 )
-LEFT JOIN "LiteLLM_BudgetTable70" b_default
+LEFT JOIN "LiteLLM_BudgetTable" b_default
     ON b_default.budget_id = (t.metadata ->> 'team_member_budget_id'::text)
 WHERE COALESCE(tm.user_id, ''::text) <> 'default_user_id'::text;
 
@@ -87,8 +151,15 @@ WHERE COALESCE(tm.user_id, ''::text) <> 'default_user_id'::text;
 | `DATABASE_URL` | 是 | 无 | PostgreSQL 连接串 |
 | `MCP_AUTH_TOKEN` | 是 | 无 | Bearer 令牌，至少 32 字节 |
 | `MCP_ADDR` | 否 | `:8080` | HTTP 监听地址 |
+| `MCP_WRITE_AUTH_TOKEN` | 启用修改时 | 无 | 独立管理令牌，至少 32 字节，不能与只读令牌相同 |
+| `LITELLM_URL` | 启用修改时 | 无 | LiteLLM 管理 API 基址，例如 `https://litellm.example.com`；禁止 URL 内置凭证 |
+| `LITELLM_MASTER_KEY` | 启用修改时 | 无 | 服务端持有的 LiteLLM 管理密钥，不提供给模型 |
+| `MCP_MAX_MEMBER_BUDGET` | 启用修改时 | 无 | 每位成员允许设置的最大额度，有限正数；单位与 LiteLLM 预算一致，通常为美元 |
+| `MCP_CHANGE_DIR` | 启用修改时 | 无 | 保存预览及执行记录的绝对目录，权限须为 `0700` |
 
-为数据库连接创建只读账号，并仅授予它读取目标视图的权限。不要把数据库密码或 MCP 令牌写入镜像、源码或 Git。
+上述五个管理变量均不配置时保持原只读模式；只配置一部分会导致启动报错，避免误以为修改能力已启用。
+
+为数据库连接创建只读账号。只查询时仅授予目标视图读取权限；启用修改时按下面的说明补充用于安全校验的只读权限，仍然不授予数据库写权限。不要把数据库密码、管理密钥或 MCP 令牌写入镜像、源码或 Git。
 
 MCP Bearer 令牌是服务级凭证：持有该令牌的客户端可以按工具参数查询视图中的任意用户或团队数据。若不同调用者应有不同的数据范围，需要在服务端加入与调用者身份绑定的授权规则；仅要求模型传入用户 ID 不能构成访问控制。
 
@@ -105,6 +176,22 @@ openssl rand -hex 32
 
 MCP HTTP 地址为 `/mcp`。对外部署时，应使用 HTTPS 反向代理或受保护的内网，并将访问令牌通过 `Authorization: Bearer <令牌>` 请求头发送。容器内服务本身提供 HTTP。
 
+### 管理权限与兼容性
+
+`MCP_AUTH_TOKEN` 只能查询，不能列出或调用两个管理工具。`MCP_WRITE_AUTH_TOKEN` 可查询并修改所有符合规则的团队；两种凭证使用独立 MCP 会话，不能借用管理会话绕过限制。此处没有实现按团队授权，也不能识别共享令牌背后的自然人；只向受信任管理员发放写令牌。
+
+`confirm=true` 和工具描述不是人工审批系统。需要在 Claude/OpenClaw 客户端保留写工具审批，不要对执行工具开启自动批准。严格的多人审批需要另接身份认证及审批平台。
+
+写接口及最小请求字段已按 [LiteLLM v1.93.0 源码](https://github.com/BerriAI/litellm/blob/v1.93.0/litellm/proxy/management_endpoints/team_endpoints.py) 和 [预算合并更新逻辑](https://github.com/BerriAI/litellm/blob/v1.93.0/litellm/proxy/management_endpoints/common_utils.py) 核对，但不代表生产版本已经验证。上线前务必在同版本测试实例确认：只发送额度时，不清零消费、不改变周期和重置时间。
+
+定向清零按 [LiteLLM 主分支的成员接口源码](https://github.com/BerriAI/litellm/blob/main/litellm/proxy/management_endpoints/team_endpoints.py) 核对（2026-10-23）：只更新成员 `spend` 并失效相关缓存，不写 `total_spend` 或预算周期。此前核对的 v1.93.0 团队接口没有这条路由。选择清零时，预览和首次执行前均会读取部署的 `/openapi.json`，确认其公开 `POST /team/{team_id}/member/{user_id}/reset_spend`；缺少接口、模式文档不可读或格式异常时，在修改任何额度前报错。需要部署支持该接口的版本；不会通过修改预算到期时间、等待调度器或直接更新数据库来替代。
+
+数据库与 `LITELLM_URL` 必须指向同一部署，使用主数据库，避免只读副本延迟导致误判。API 预算关联与数据库配置不一致时拒绝操作。缺少 `budget_reset_at` 等必要响应字段、缺少已核对版本的表结构或存在行级安全策略时也拒绝操作，不做兼容猜测。
+
+共享检查覆盖团队默认预算、成员、虚拟密钥、终端客户、标签、组织、组织成员、项目，以及目录中发现的额外预算外键与 `public.LiteLLM_*` 表的 `budget_id` 列。数据库账号需要读取这些引用列及成员预算配置，授权示例见 [sql/budget_admin_read_permissions.sql](sql/budget_admin_read_permissions.sql)。仅授予密钥表的 `budget_id` 列权限，不需要读取密钥内容。
+
+安全检查无法发现应用自行存放且没有外键、也不符合上述列规则的引用。如果你扩展了 LiteLLM 预算存储，先补充引用检查。预检与 HTTP 写入也不是一个数据库事务，外部管理员仍可能在两者之间修改关联；执行期间应避免其他入口并发调整相同预算。
+
 ## 本地运行
 
 ```bash
@@ -114,6 +201,19 @@ go run .
 ```
 
 服务启动时会验证数据库连接。通过 `http://localhost:8080/mcp` 连接。
+
+启用修改功能时，在已有查询配置基础上增加：
+
+```bash
+export LITELLM_URL='http://localhost:4000'
+export LITELLM_MASTER_KEY='替换为测试实例管理密钥'
+export MCP_WRITE_AUTH_TOKEN="$(openssl rand -hex 32)"
+export MCP_MAX_MEMBER_BUDGET='1000'
+export MCP_CHANGE_DIR="$PWD/.changes"
+go run .
+```
+
+服务会创建缺失的记录目录。已有目录必须为 `0700`，记录文件为 `0600`；目录中包含邮箱与预算信息，禁止公开。更换写令牌或 LiteLLM 地址后，旧预览不再允许执行。
 
 ## Docker 部署
 
@@ -134,6 +234,23 @@ docker run --rm \
 ```
 
 运行命令前，在当前终端或容器编排平台中设置这两个环境变量。生产环境建议通过 Secret 注入敏感变量，并在反向代理上配置 TLS。数据库地址必须能从容器网络访问。
+
+启用管理能力时，预先设置上述管理环境变量，挂载持久化数据卷：
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e DATABASE_URL -e MCP_AUTH_TOKEN -e MCP_WRITE_AUTH_TOKEN \
+  -e LITELLM_URL -e LITELLM_MASTER_KEY -e MCP_MAX_MEMBER_BUDGET \
+  -e MCP_CHANGE_DIR=/data/changes \
+  -v litellm-mcp-data:/data \
+  litellm-mcp-server
+```
+
+镜像以 UID/GID `65532:65532` 运行，已准备 `/data/changes` 目录。绑定宿主目录时，应事先将目录所有者和 `0700` 权限配置为该用户可用。不要把容器内的 `localhost` 当作宿主机或另一个 LiteLLM 容器。
+
+建议只部署一个管理实例；同一主机多进程必须使用同一个记录目录，文件锁才能串行执行。跨主机、多副本或不能可靠支持 `flock` 的网络文件系统不受支持，不能声称全局幂等。
+
+保留持久化数据卷，容器重建不能删除它。记录含预览时间、执行时间、管理凭证摘要、目标、旧配置、新额度和逐项结果，但不是防篡改审计系统。按组织要求备份归档；未完成、`unconfirmed` 及仍需幂等查询的记录不要删除。归档或删除后，对应编号不可再查询，不会重新提交。
 
 ## 连接 MCP 客户端
 
@@ -171,6 +288,8 @@ npx -y @modelcontextprotocol/inspector
 
 在 Inspector 中选择 Streamable HTTP，地址填写 `http://localhost:8080/mcp`，并添加 `Authorization: Bearer <MCP_AUTH_TOKEN>` 请求头。Inspector 终端不需要数据库连接串。
 
+测试修改时，改用独立 `MCP_WRITE_AUTH_TOKEN`，应看到三个工具。先调用 `preview_member_budget_change` 检查名单、额度、周期和风险，再人工确认调用 `apply_member_budget_change`；更换令牌后重新建立 MCP 连接。
+
 调用 `query_team_member_budget` 时，可以只传团队别名 `{"team_alias":"研发团队"}`、完整邮箱 `{"user_email":"bob@example.com"}` 或前缀 `{"user_email":"bob"}`，也可以组合查询：
 
 ```json
@@ -178,3 +297,12 @@ npx -y @modelcontextprotocol/inspector
 ```
 
 修改工具定义后，重启服务并在 MCP 客户端中重新连接，以刷新工具的入参和返回结构。
+
+新增自动测试使用模拟 LiteLLM HTTP 服务与数据库结果，覆盖最小写请求、预览不写入、身份歧义、共享引用、配置冲突、只读会话隔离、并发幂等、中断恢复、异常响应回读和部分成功；清零测试额外覆盖默认关闭、相同额度仍清零、缺少接口时提前拒绝、累计消费和周期保留、清零后新增消费、丢失回执和恢复时不重复清零。执行完整检查：
+
+```bash
+go test -race -timeout 60s ./...
+go vet ./...
+```
+
+这些测试不连接真实 PostgreSQL，也不修改生产预算。上线验收还需在真实同版本测试环境核对数据库授权、视图、API 返回字段、周期和消费保留行为。只有本地假视图而没有 LiteLLM 基础表和管理 API 时，可以测试查询，不能完成预算修改联调。
