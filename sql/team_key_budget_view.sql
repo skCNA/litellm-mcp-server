@@ -1,5 +1,5 @@
 -- 由数据库管理员检查 LiteLLM 部署版本的表结构后执行。
--- 视图仅暴露 key 的标识信息和预算信息，不暴露 token 或 token 哈希。
+-- 视图仅暴露 key 标识、预算和按模型 TPM 配置，不暴露 token 或 token 哈希。
 CREATE OR REPLACE VIEW public.team_key_budget_view AS
 SELECT
     t.team_id,
@@ -19,7 +19,9 @@ SELECT
     COALESCE(vt.budget_reset_at, b.budget_reset_at) AS budget_reset_at,
     vt.expires,
     vt.blocked,
-    vt.created_at
+    vt.created_at,
+    COALESCE(vt.metadata -> 'model_tpm_limit', '{}'::jsonb) AS key_model_tpm_limit,
+    COALESCE(t.metadata -> 'model_tpm_limit', '{}'::jsonb) AS team_model_tpm_limit
 FROM public."LiteLLM_VerificationToken" vt
 JOIN public."LiteLLM_TeamTable" t
     ON t.team_id = vt.team_id

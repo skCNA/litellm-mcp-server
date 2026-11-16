@@ -62,6 +62,7 @@ type budgetAdminService struct {
 	safety     budgetSafety
 	store      *changeStore
 	keyBudgets *keyBudgetAdminService
+	keyTPM     *keyModelTPMAdminService
 	owner      string
 	target     string
 	max        float64

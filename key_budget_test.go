@@ -266,7 +266,10 @@ func TestTeamKeyBudgetViewDoesNotExposeKeyToken(t *testing.T) {
 		!strings.Contains(sql, "grant select on public.team_key_budget_view to mcp_readonly") {
 		t.Fatalf("视图应可由只读账号查询: %s", sql)
 	}
-	if strings.Contains(sql, "vt.token") || strings.Contains(sql, "tpm_limit") || strings.Contains(sql, "rpm_limit") {
-		t.Fatalf("视图不应读取 key token 或包含首版之外的速率限制: %s", sql)
+	if strings.Contains(sql, "vt.token") || strings.Contains(sql, "rpm_limit") || strings.Contains(sql, "vt.tpm_limit") {
+		t.Fatalf("视图不应读取 key token、key 级 TPM/RPM 或 RPM 配置: %s", sql)
+	}
+	if !strings.Contains(sql, "vt.metadata -> 'model_tpm_limit'") || !strings.Contains(sql, "t.metadata -> 'model_tpm_limit'") {
+		t.Fatalf("视图应只读取 key 与 team 的按模型 TPM 配置: %s", sql)
 	}
 }

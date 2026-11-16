@@ -74,5 +74,9 @@ func (c *adminConfig) service(pool budgetQuerier) (*budgetAdminService, error) {
 		query: &keyBudgetService{pool: pool}, api: api, store: store,
 		owner: service.owner, target: service.target, max: c.keyMax, now: time.Now,
 	}
+	service.keyTPM = &keyModelTPMAdminService{
+		query: &keyBudgetService{pool: pool}, api: api, store: store,
+		owner: service.owner, target: service.target, now: time.Now,
+	}
 	return service, nil
 }

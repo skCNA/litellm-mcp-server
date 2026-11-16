@@ -58,6 +58,63 @@ func (c *adminClient) CheckKeyBudgetUpdateSupport(ctx context.Context) error {
 	return nil
 }
 
+func (c *adminClient) CheckKeyModelTPMUpdateSupport(ctx context.Context) error {
+	var schema struct {
+		Paths      map[string]map[string]json.RawMessage `json:"paths"`
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/openapi.json", nil, &schema); err != nil {
+		return fmt.Errorf("无法确认 LiteLLM 是否支持 key 的 model_tpm_limit，尚未修改")
+	}
+	var operation struct {
+		RequestBody struct {
+			Content map[string]struct {
+				Schema json.RawMessage `json:"schema"`
+			} `json:"content"`
+		} `json:"requestBody"`
+	}
+	if json.Unmarshal(schema.Paths["/key/update"]["post"], &operation) != nil {
+		return fmt.Errorf("当前 LiteLLM 未公开 POST /key/update，尚未修改")
+	}
+	for _, content := range operation.RequestBody.Content {
+		if openAPISchemaHasProperty(content.Schema, "model_tpm_limit", schema.Components.Schemas, map[string]bool{}) {
+			return nil
+		}
+	}
+	return fmt.Errorf("当前 LiteLLM 未在 POST /key/update 声明 model_tpm_limit，尚未修改")
+}
+
+func openAPISchemaHasProperty(raw json.RawMessage, property string, schemas map[string]json.RawMessage, visited map[string]bool) bool {
+	var schema struct {
+		Ref        string                     `json:"$ref"`
+		Properties map[string]json.RawMessage `json:"properties"`
+		AllOf      []json.RawMessage          `json:"allOf"`
+	}
+	if json.Unmarshal(raw, &schema) != nil {
+		return false
+	}
+	if _, ok := schema.Properties[property]; ok {
+		return true
+	}
+	for _, branch := range schema.AllOf {
+		if openAPISchemaHasProperty(branch, property, schemas, visited) {
+			return true
+		}
+	}
+	const prefix = "#/components/schemas/"
+	if !strings.HasPrefix(schema.Ref, prefix) {
+		return false
+	}
+	name := strings.TrimPrefix(schema.Ref, prefix)
+	if visited[name] {
+		return false
+	}
+	visited[name] = true
+	return openAPISchemaHasProperty(schemas[name], property, schemas, visited)
+}
+
 type adminClient struct {
 	base   string
 	key    string
@@ -143,6 +200,17 @@ func (c *adminClient) UpdateKeyBudget(ctx context.Context, teamID, keyAlias stri
 		MaxBudget      float64 `json:"max_budget"`
 		BudgetDuration string  `json:"budget_duration"`
 	}{teamID, keyAlias, amount, budgetDuration}, nil)
+}
+
+func (c *adminClient) UpdateKeyModelTPM(ctx context.Context, teamID, keyAlias string, limits map[string]int64) error {
+	if limits == nil {
+		limits = map[string]int64{}
+	}
+	return c.request(ctx, http.MethodPost, "/key/update", struct {
+		TeamID        string           `json:"team_id"`
+		KeyAlias      string           `json:"key_alias"`
+		ModelTPMLimit map[string]int64 `json:"model_tpm_limit"`
+	}{teamID, keyAlias, limits}, nil)
 }
 
 const memberSpendResetRoute = "/team/{team_id}/member/{user_id}/reset_spend"

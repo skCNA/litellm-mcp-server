@@ -243,6 +243,56 @@ func (s *changeStore) saveKey(change *keyBudgetChange) error {
 	return dir.Sync()
 }
 
+func (s *changeStore) loadKeyTPM(id string) (*keyModelTPMChange, error) {
+	if !changeIDPattern.MatchString(id) {
+		return nil, fmt.Errorf("change_id 无效")
+	}
+	data, err := os.ReadFile(filepath.Join(s.dir, "key-tpm-"+id+".json"))
+	if err != nil {
+		return nil, fmt.Errorf("key TPM 变更记录不存在或无法读取")
+	}
+	var change keyModelTPMChange
+	if err := json.Unmarshal(data, &change); err != nil || change.ID != id || !validKeyModelTPMChange(&change) {
+		return nil, fmt.Errorf("key TPM 变更记录损坏，拒绝执行")
+	}
+	return &change, nil
+}
+
+func (s *changeStore) saveKeyTPM(change *keyModelTPMChange) error {
+	if !validKeyModelTPMChange(change) {
+		return fmt.Errorf("key TPM 变更记录无效，拒绝保存")
+	}
+	change.UpdatedAt = time.Now().UTC()
+	data, err := json.MarshalIndent(change, "", "  ")
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(s.dir, ".key-tpm-change-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	if _, err = file.Write(data); err != nil {
+		return err
+	}
+	if err = file.Sync(); err != nil {
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(file.Name(), filepath.Join(s.dir, "key-tpm-"+change.ID+".json")); err != nil {
+		return err
+	}
+	dir, err := os.Open(s.dir)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
 // 锁覆盖执行与记录落盘，保证同目录的多进程不会重复提交；等待可被调用上下文取消。
 func (s *changeStore) lock(ctx context.Context) (func(), error) {
 	file, err := os.OpenFile(filepath.Join(s.dir, ".lock"), os.O_CREATE|os.O_RDWR, 0600)

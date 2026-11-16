@@ -35,6 +35,7 @@ func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func TestAdminMCPHTTPIsolation(t *testing.T) {
 	service, fixture := newAdminTestService(t)
 	service.keyBudgets = &keyBudgetAdminService{}
+	service.keyTPM = &keyModelTPMAdminService{}
 	readToken, writeToken := strings.Repeat("r", 32), strings.Repeat("w", 32)
 	server := httptest.NewServer(newAuthenticatedMCPHandler(readToken, writeToken, service.query.pool, service))
 	defer server.Close()
@@ -57,11 +58,12 @@ func TestAdminMCPHTTPIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 		if token == writeToken {
-			if len(list.Tools) != 6 {
-				t.Fatalf("管理令牌应看到六个工具: %+v", list.Tools)
+			if len(list.Tools) != 8 {
+				t.Fatalf("管理令牌应看到八个工具: %+v", list.Tools)
 			}
 			for _, tool := range list.Tools {
-				if tool.Name != "preview_member_budget_change" && tool.Name != "preview_team_key_budget_change" {
+				if tool.Name != "preview_member_budget_change" && tool.Name != "preview_team_key_budget_change" &&
+					tool.Name != "preview_team_key_model_tpm_change" {
 					continue
 				}
 				data, err := json.Marshal(tool.InputSchema)
@@ -70,25 +72,32 @@ func TestAdminMCPHTTPIsolation(t *testing.T) {
 				}
 				var schema struct {
 					Properties map[string]struct {
-						Type string `json:"type"`
+						Type json.RawMessage `json:"type"`
 					} `json:"properties"`
 					Required []string `json:"required"`
 				}
 				if json.Unmarshal(data, &schema) != nil {
 					t.Fatalf("参数结构无效: %s", data)
 				}
-				if tool.Name == "preview_member_budget_change" && schema.Properties["reset_current_cycle_spend"].Type != "boolean" {
+				if tool.Name == "preview_member_budget_change" && string(schema.Properties["reset_current_cycle_spend"].Type) != `"boolean"` {
 					t.Fatalf("清零参数必须是布尔类型: %s", data)
 				}
 				if tool.Name == "preview_team_key_budget_change" {
 					for _, name := range []string{"team_alias", "key_alias", "max_budget", "budget_duration"} {
-						if schema.Properties[name].Type == "" {
+						if len(schema.Properties[name].Type) == 0 {
 							t.Fatalf("key 预算预览缺少 %s 参数: %s", name, data)
 						}
 					}
 					for _, required := range schema.Required {
 						if required == "budget_duration" {
 							t.Fatal("预算周期应为可选参数，省略时默认使用 1d")
+						}
+					}
+				}
+				if tool.Name == "preview_team_key_model_tpm_change" {
+					for _, name := range []string{"team_alias", "key_alias", "model_name", "action", "tpm_limit"} {
+						if len(schema.Properties[name].Type) == 0 {
+							t.Fatalf("key TPM 预览缺少 %s 参数: %s", name, data)
 						}
 					}
 				}

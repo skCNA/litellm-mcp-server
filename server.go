@@ -67,6 +67,22 @@ func newAdminMCPServer(pool budgetQuerier, admin *budgetAdminService) *mcp.Serve
 			Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(true)},
 		}, admin.keyBudgets.Apply)
 	}
+	if admin.keyTPM != nil {
+		mcp.AddTool(server, &mcp.Tool{
+			Name: "preview_team_key_model_tpm_change",
+			Description: "预览团队下单个 key 对一个 model 的 model_tpm_limit 设置、修改或清除，不写入 LiteLLM。" +
+				"team_alias、key_alias 和 model_name 均精确匹配；action=set 时 tpm_limit 必须为正整数，action=remove 时只清除该模型在 key 上的条目并保留其他模型配置。" +
+				"返回变更前后的完整 key model_tpm_limit 映射及该模型的团队级 TPM 限制；团队限制独立生效。必须先向管理员展示完整预览并取得确认，再调用执行工具。",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		}, admin.keyTPM.Preview)
+		mcp.AddTool(server, &mcp.Tool{
+			Name: "apply_team_key_model_tpm_change",
+			Description: "执行已经预览且经管理员明确确认的单个 key、单个 model TPM 限制变更。" +
+				"只向 LiteLLM /key/update 提交 team_id、key_alias 和完整 model_tpm_limit 映射；执行前复核 key 与团队 TPM 快照，执行后回读确认。" +
+				"同一 change_id 不重复提交；结果不确定时必须人工核查，不得自动生成新计划重试。",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(true)},
+		}, admin.keyTPM.Apply)
+	}
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "preview_member_budget_change",
 		Description: "预览指定团队普通成员的预算上限修改，不写入 LiteLLM。" +

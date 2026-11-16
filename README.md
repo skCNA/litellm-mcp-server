@@ -82,6 +82,27 @@
 
 执行时会重新核对目标和预算配置，只调用 LiteLLM `POST /key/update` 更新 `max_budget` 和选定的 `budget_duration`，再从预算视图回读确认。不会更新 key 关联预算、当前消费或 TPM/RPM；同一编号不会重复提交。出现配置冲突或回读无法确认时，需要人工核查，不能自动创建新计划重试。服务会在预览和执行前检查部署的 `/openapi.json` 是否公开 `POST /key/update`；不支持该接口的部署会拒绝修改。
 
+### `preview_team_key_model_tpm_change`
+
+预览团队下单个 key 对一个模型设置、修改或清除 key 级 TPM 上限，不写入 LiteLLM。`team_alias`、`key_alias` 和 `model_name` 必须精确匹配。`model_name` 使用 LiteLLM 配置中的模型名；`action=set` 时 `tpm_limit` 必须是正整数，`action=remove` 时不能提供 `tpm_limit`。清除只删除该模型在 key 的 `model_tpm_limit` 映射中的条目，保留其他模型的限制，不用零表示清除。
+
+预览显示目标模型原有和新 key 级 TPM、完整映射及团队级该模型的 TPM。团队级限制是独立限流项，清除 key 级条目不会移除团队级限制。预览有效期为 10 分钟。设置示例：
+
+```json
+{"team_alias":"math","key_alias":"batch-a","model_name":"gpt-6-sol","action":"set","tpm_limit":12000}
+```
+
+清除该模型的 key 级限制：
+
+```json
+{"team_alias":"math","key_alias":"batch-a","model_name":"gpt-6-sol","action":"remove"}
+```
+
+### `apply_team_key_model_tpm_change`
+
+先向管理员展示完整预览并取得明确确认，再传入预览返回的 `change_id` 和 `confirm=true`。执行前会复核 key 和团队的 TPM 配置；只提交完整 `model_tpm_limit` 映射，保留其他模型限制；执行后回读确认。同一编号不会重复提交。配置冲突或结果无法确认时，需要人工核查，不能自动重试。
+
+预览和执行前会检查 LiteLLM `/openapi.json` 中 `POST /key/update` 的请求结构是否声明 `model_tpm_limit`。数据库只读视图也必须包含 `key_model_tpm_limit` 与 `team_model_tpm_limit` 两列；部署前由数据库管理员按当前 LiteLLM 表结构执行 [sql/team_key_budget_view.sql](sql/team_key_budget_view.sql)。视图不暴露 key/token 或其哈希。
 
 ### `preview_member_budget_change`
 
@@ -334,7 +355,7 @@ npx -y @modelcontextprotocol/inspector
 
 在 Inspector 中选择 Streamable HTTP，地址填写 `http://localhost:8080/mcp`，并添加 `Authorization: Bearer <MCP_AUTH_TOKEN>` 请求头。Inspector 终端不需要数据库连接串。
 
-测试修改时，改用独立 `MCP_WRITE_AUTH_TOKEN`，应看到四个管理工具。修改成员预算先调用 `preview_member_budget_change`；修改 key 预算先调用 `preview_team_key_budget_change`。查看各自预览并人工确认后，分别调用对应的 `apply_...` 工具；更换令牌后重新建立 MCP 连接。
+测试修改时，改用独立 `MCP_WRITE_AUTH_TOKEN`，应看到六个管理工具。修改成员预算先调用 `preview_member_budget_change`；修改 key 预算先调用 `preview_team_key_budget_change`；修改 key 的模型 TPM 先调用 `preview_team_key_model_tpm_change`。查看对应预览并人工确认后，再调用对应的 `apply_...` 工具；更换令牌后重新建立 MCP 连接。
 
 调用 `query_team_member_budget` 时，可以只传团队别名 `{"team_alias":"研发团队"}`、完整邮箱 `{"user_email":"bob@example.com"}` 或前缀 `{"user_email":"bob"}`，也可以组合查询：
 
