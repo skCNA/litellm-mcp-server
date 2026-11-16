@@ -58,12 +58,18 @@
 
 ### `preview_team_key_budget_change`
 
-预览一个团队 key 的预算上限修改，不写入 LiteLLM。必须提供精确的 `team_alias`、`key_alias` 和正数 `max_budget`；别名必须在目标团队下唯一，LiteLLM 的 `/key/update` 也要求 key 别名能唯一定位。新额度不能超过管理员上限；不支持设为 0 或清除额度。
+预览一个团队 key 的预算上限修改，不写入 LiteLLM。必须提供精确的 `team_alias`、`key_alias` 和正数 `max_budget`；别名必须在目标团队下唯一，LiteLLM 的 `/key/update` 也要求 key 别名能唯一定位。新额度不能超过管理员上限；不支持设为 0 或清除额度。可选参数 `budget_duration` 指定周期，省略时默认设置为 `1d`；也可传 `7d`、`30d`、`1mo`、`weekly` 等 LiteLLM 支持的周期。
 
-返回旧 key 自身额度、关联预算额度、旧生效额度、新 key 额度及预期生效额度。若关联预算低于新 key 额度，关联预算仍限制最终生效额度。预览有效期为 10 分钟。示例：
+返回旧 key 自身额度、关联预算额度、当前与新周期、旧生效额度、新 key 额度及预期生效额度。若关联预算低于新 key 额度，关联预算仍限制最终生效额度。LiteLLM 会按新周期计算下次重置时间；改周期不会清零当前消费。key 显式设置的周期会覆盖它原先继承的关联预算周期，但不会修改关联预算本身。预览有效期为 10 分钟。示例：
 
 ```json
 {"team_alias":"math","key_alias":"batch-a","max_budget":50}
+```
+
+显式设为每周预算：
+
+```json
+{"team_alias":"math","key_alias":"batch-a","max_budget":50,"budget_duration":"7d"}
 ```
 
 ### `apply_team_key_budget_change`
@@ -74,7 +80,7 @@
 {"change_id":"替换为预览返回的编号","confirm":true}
 ```
 
-执行时会重新核对目标和预算配置，只调用 LiteLLM `POST /key/update` 更新 `max_budget`，再从预算视图回读确认。不会更新 key 关联预算、消费、预算周期、重置时间或 TPM/RPM；同一编号不会重复提交。出现配置冲突或回读无法确认时，需要人工核查，不能自动创建新计划重试。服务会在预览和执行前检查部署的 `/openapi.json` 是否公开 `POST /key/update`；不支持该接口的部署会拒绝修改。
+执行时会重新核对目标和预算配置，只调用 LiteLLM `POST /key/update` 更新 `max_budget` 和选定的 `budget_duration`，再从预算视图回读确认。不会更新 key 关联预算、当前消费或 TPM/RPM；同一编号不会重复提交。出现配置冲突或回读无法确认时，需要人工核查，不能自动创建新计划重试。服务会在预览和执行前检查部署的 `/openapi.json` 是否公开 `POST /key/update`；不支持该接口的部署会拒绝修改。
 
 
 ### `preview_member_budget_change`

@@ -81,9 +81,14 @@ func TestAdminMCPHTTPIsolation(t *testing.T) {
 					t.Fatalf("清零参数必须是布尔类型: %s", data)
 				}
 				if tool.Name == "preview_team_key_budget_change" {
-					for _, name := range []string{"team_alias", "key_alias", "max_budget"} {
+					for _, name := range []string{"team_alias", "key_alias", "max_budget", "budget_duration"} {
 						if schema.Properties[name].Type == "" {
 							t.Fatalf("key 预算预览缺少 %s 参数: %s", name, data)
+						}
+					}
+					for _, required := range schema.Required {
+						if required == "budget_duration" {
+							t.Fatal("预算周期应为可选参数，省略时默认使用 1d")
 						}
 					}
 				}

@@ -136,12 +136,13 @@ func (c *adminClient) Update(ctx context.Context, teamID, userID string, amount 
 	}{teamID, userID, amount}, nil)
 }
 
-func (c *adminClient) UpdateKeyBudget(ctx context.Context, teamID, keyAlias string, amount float64) error {
+func (c *adminClient) UpdateKeyBudget(ctx context.Context, teamID, keyAlias string, amount float64, budgetDuration string) error {
 	return c.request(ctx, http.MethodPost, "/key/update", struct {
-		TeamID    string  `json:"team_id"`
-		KeyAlias  string  `json:"key_alias"`
-		MaxBudget float64 `json:"max_budget"`
-	}{teamID, keyAlias, amount}, nil)
+		TeamID         string  `json:"team_id"`
+		KeyAlias       string  `json:"key_alias"`
+		MaxBudget      float64 `json:"max_budget"`
+		BudgetDuration string  `json:"budget_duration"`
+	}{teamID, keyAlias, amount, budgetDuration}, nil)
 }
 
 const memberSpendResetRoute = "/team/{team_id}/member/{user_id}/reset_spend"

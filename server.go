@@ -54,14 +54,15 @@ func newAdminMCPServer(pool budgetQuerier, admin *budgetAdminService) *mcp.Serve
 			Name: "preview_team_key_budget_change",
 			Description: "预览指定团队下单个 key 的 max_budget 修改，不写入 LiteLLM。" +
 				"team_alias 与 key_alias 必须精确匹配唯一目标；新额度必须为正数且不超过管理员上限。" +
+				"budget_duration 可选，省略时使用 1d；可指定如 7d、30d、1mo、weekly 的周期。" +
 				"返回 key 自身额度、关联预算、生效额度和预期变更；关联预算更低时，最终生效额度仍由关联预算限制。" +
-				"不会修改消费、预算周期、关联预算或 TPM/RPM。必须先向管理员完整展示预览并取得确认，再调用执行工具。",
+				"预算周期变更会保留当前消费，不修改关联预算或 TPM/RPM。必须先向管理员完整展示预览并取得确认，再调用执行工具。",
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, admin.keyBudgets.Preview)
 		mcp.AddTool(server, &mcp.Tool{
 			Name: "apply_team_key_budget_change",
 			Description: "执行已经预览且经管理员明确确认的单个 key 预算修改。" +
-				"只提交 key_alias、team_id 与 max_budget 至 LiteLLM /key/update；执行前复核目标和预算配置，执行后回读确认。" +
+				"只提交 key_alias、team_id、max_budget 与预算周期至 LiteLLM /key/update；执行前复核目标和预算配置，执行后回读确认。" +
 				"同一 change_id 不重复提交；结果不确定时必须人工核查，不得自动生成新计划重试。",
 			Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(true)},
 		}, admin.keyBudgets.Apply)
