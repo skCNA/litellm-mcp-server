@@ -311,14 +311,14 @@ LIMIT 2`, keyBudgetViewName), keyAlias)
 
 func decodeModelTPMLimitMap(value pgtype.Text) (map[string]int64, error) {
 	if !value.Valid || strings.TrimSpace(value.String) == "" || strings.TrimSpace(value.String) == "null" {
-		return nil, nil
+		return map[string]int64{}, nil
 	}
 	var limits map[string]int64
 	if err := json.Unmarshal([]byte(value.String), &limits); err != nil {
 		return nil, err
 	}
-	if len(limits) == 0 {
-		return nil, nil
+	if limits == nil {
+		return map[string]int64{}, nil
 	}
 	for model := range limits {
 		if strings.TrimSpace(model) == "" {

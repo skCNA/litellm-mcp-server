@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestChangeModelTPMLimitPreservesOtherModels(t *testing.T) {
@@ -197,6 +198,118 @@ func TestDecodeModelTPMLimitMap(t *testing.T) {
 		} else if err == nil {
 			t.Fatalf("无效映射 %s 应拒绝", value)
 		}
+	}
+}
+
+func TestApplyKeyModelTPMReturnsEmptyTeamMapAsObjectWhenUnset(t *testing.T) {
+	keyLimits := map[string]int64{"gpt-6-sol": 1000}
+	var teamLimits map[string]int64
+	query := budgetQueryFunc(func(context.Context, string, ...any) (pgx.Rows, error) {
+		keyJSON, _ := json.Marshal(keyLimits)
+		teamJSON, _ := json.Marshal(teamLimits)
+		return &budgetRowsStub{data: [][]any{{"team-math", "math", "batch-a", string(keyJSON), string(teamJSON)}}}, nil
+	})
+	store, err := newChangeStore(filepath.Join(t.TempDir(), "changes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &keyModelTPMAPIStub{apply: func(_ string, limits map[string]int64) { keyLimits = limits }}
+	service := &keyModelTPMAdminService{
+		query: &keyBudgetService{pool: query}, api: api, store: store, owner: "owner", target: "https://litellm.example",
+		now: func() time.Time { return time.Date(2026, 11, 16, 2, 0, 0, 0, time.UTC) },
+	}
+	limit := int64(300000)
+	_, preview, err := service.Preview(context.Background(), nil, PreviewKeyModelTPMInput{
+		TeamAlias: "math", KeyAlias: "batch-a", ModelName: "gpt-6-sol", Action: "set", TPMLimit: &limit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := service.Apply(context.Background(), nil, ApplyKeyModelTPMInput{ChangeID: preview.ChangeID, Confirm: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "applied" || result.Observed == nil || result.Observed.TeamModelTPMLimit == nil {
+		t.Fatalf("未配置团队 TPM 时 observed.team_model_tpm_limit 必须是空对象: %+v", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	observed, ok := payload["observed"].(map[string]any)
+	if !ok {
+		t.Fatalf("observed 应为对象: %s", encoded)
+	}
+	if teamLimits, ok := observed["team_model_tpm_limit"].(map[string]any); !ok || len(teamLimits) != 0 {
+		t.Fatalf("team_model_tpm_limit 应编码为 {} 而不是 null: %s", encoded)
+	}
+}
+
+func TestApplyKeyModelTPMThroughMCPAcceptsEmptyTeamLimitObject(t *testing.T) {
+	keyLimits := map[string]int64{"gpt-6-sol": 1000}
+	query := budgetQueryFunc(func(context.Context, string, ...any) (pgx.Rows, error) {
+		keyJSON, _ := json.Marshal(keyLimits)
+		return &budgetRowsStub{data: [][]any{{"team-math", "math", "batch-a", string(keyJSON), `null`}}}, nil
+	})
+	store, err := newChangeStore(filepath.Join(t.TempDir(), "changes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &keyModelTPMAPIStub{apply: func(_ string, limits map[string]int64) { keyLimits = limits }}
+	service := &keyModelTPMAdminService{
+		query: &keyBudgetService{pool: query}, api: api, store: store, owner: "owner", target: "https://litellm.example",
+		now: func() time.Time { return time.Date(2026, 11, 16, 2, 0, 0, 0, time.UTC) },
+	}
+	admin := &budgetAdminService{keyTPM: service}
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := newAdminMCPServer(query, admin).Connect(context.Background(), serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	session, err := client.Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	previewResult, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "preview_team_key_model_tpm_change",
+		Arguments: map[string]any{
+			"team_alias": "math", "key_alias": "batch-a", "model_name": "gpt-6-sol",
+			"action": "set", "tpm_limit": 300000,
+		},
+	})
+	if err != nil || previewResult.IsError {
+		t.Fatalf("MCP TPM 预览失败: %+v, err=%v", previewResult, err)
+	}
+	encoded, err := json.Marshal(previewResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var preview KeyModelTPMChangeOutput
+	if err := json.Unmarshal(encoded, &preview); err != nil {
+		t.Fatal(err)
+	}
+	applyResult, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "apply_team_key_model_tpm_change",
+		Arguments: map[string]any{"change_id": preview.ChangeID, "confirm": true},
+	})
+	if err != nil || applyResult.IsError {
+		t.Fatalf("团队 TPM 未配置时 MCP apply 回执应通过输出结构校验: %+v, err=%v", applyResult, err)
+	}
+	encoded, err = json.Marshal(applyResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var applied KeyModelTPMChangeOutput
+	if err := json.Unmarshal(encoded, &applied); err != nil || applied.Status != "applied" || applied.Observed == nil ||
+		applied.Observed.TeamModelTPMLimit == nil || len(applied.Observed.TeamModelTPMLimit) != 0 {
+		t.Fatalf("MCP apply 应返回带空团队 TPM 对象的成功回执: %s, err=%v", encoded, err)
 	}
 }
 
