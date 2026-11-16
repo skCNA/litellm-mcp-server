@@ -37,11 +37,35 @@ func newMCPServer(pool budgetQuerier) *mcp.Server {
 			"返回所有匹配记录，包含团队和用户标识、邮箱、本周期费用、累计费用、预算上限及预算来源。" +
 			"数据仅来自 " + budgetViewName + "；成员预算不代表团队总预算。",
 	}, (&budgetService{pool: pool}).QueryTeamMemberBudget)
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "query_team_key_budget",
+		Description: "查询 LiteLLM 团队下虚拟 key 的预算与消费，只允许按 team_alias 精确查询，可选 key_alias 精确筛选。" +
+			"按页返回 key 名称、所属用户、消费、key 自身额度、关联预算额度、生效额度、周期和状态；" +
+			"不返回 key/token 或其哈希。数据仅来自 " + keyBudgetViewName + "。",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, (&keyBudgetService{pool: pool}).QueryTeamKeyBudget)
 	return server
 }
 
 func newAdminMCPServer(pool budgetQuerier, admin *budgetAdminService) *mcp.Server {
 	server := newMCPServer(pool)
+	if admin.keyBudgets != nil {
+		mcp.AddTool(server, &mcp.Tool{
+			Name: "preview_team_key_budget_change",
+			Description: "预览指定团队下单个 key 的 max_budget 修改，不写入 LiteLLM。" +
+				"team_alias 与 key_alias 必须精确匹配唯一目标；新额度必须为正数且不超过管理员上限。" +
+				"返回 key 自身额度、关联预算、生效额度和预期变更；关联预算更低时，最终生效额度仍由关联预算限制。" +
+				"不会修改消费、预算周期、关联预算或 TPM/RPM。必须先向管理员完整展示预览并取得确认，再调用执行工具。",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		}, admin.keyBudgets.Preview)
+		mcp.AddTool(server, &mcp.Tool{
+			Name: "apply_team_key_budget_change",
+			Description: "执行已经预览且经管理员明确确认的单个 key 预算修改。" +
+				"只提交 key_alias、team_id 与 max_budget 至 LiteLLM /key/update；执行前复核目标和预算配置，执行后回读确认。" +
+				"同一 change_id 不重复提交；结果不确定时必须人工核查，不得自动生成新计划重试。",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(true)},
+		}, admin.keyBudgets.Apply)
+	}
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "preview_member_budget_change",
 		Description: "预览指定团队普通成员的预算上限修改，不写入 LiteLLM。" +

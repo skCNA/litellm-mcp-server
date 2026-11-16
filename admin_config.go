@@ -12,21 +12,24 @@ import (
 )
 
 type adminConfig struct {
-	token string
-	base  string
-	key   string
-	dir   string
-	max   float64
+	token  string
+	base   string
+	key    string
+	dir    string
+	max    float64
+	keyMax float64
 }
 
 func loadAdminConfig(readToken string) (*adminConfig, error) {
 	names := []string{"MCP_WRITE_AUTH_TOKEN", "LITELLM_URL", "LITELLM_MASTER_KEY", "MCP_CHANGE_DIR", "MCP_MAX_MEMBER_BUDGET"}
 	values := make([]string, len(names))
 	enabled := false
+	keyMaxSetting := strings.TrimSpace(os.Getenv("MCP_MAX_KEY_BUDGET"))
 	for i, name := range names {
 		values[i] = os.Getenv(name)
 		enabled = enabled || values[i] != ""
 	}
+	enabled = enabled || keyMaxSetting != ""
 	if !enabled {
 		return nil, nil
 	}
@@ -43,7 +46,14 @@ func loadAdminConfig(readToken string) (*adminConfig, error) {
 	if err != nil || max <= 0 || math.IsNaN(max) || math.IsInf(max, 0) {
 		return nil, fmt.Errorf("MCP_MAX_MEMBER_BUDGET 必须为有限正数")
 	}
-	return &adminConfig{token: values[0], base: values[1], key: values[2], dir: values[3], max: max}, nil
+	keyMax := max
+	if keyMaxSetting != "" {
+		keyMax, err = strconv.ParseFloat(keyMaxSetting, 64)
+		if err != nil || keyMax <= 0 || math.IsNaN(keyMax) || math.IsInf(keyMax, 0) {
+			return nil, fmt.Errorf("MCP_MAX_KEY_BUDGET 必须为有限正数")
+		}
+	}
+	return &adminConfig{token: values[0], base: values[1], key: values[2], dir: values[3], max: max, keyMax: keyMax}, nil
 }
 
 func (c *adminConfig) service(pool budgetQuerier) (*budgetAdminService, error) {
@@ -56,8 +66,13 @@ func (c *adminConfig) service(pool budgetQuerier) (*budgetAdminService, error) {
 		return nil, err
 	}
 	owner := sha256.Sum256([]byte(c.token))
-	return &budgetAdminService{
+	service := &budgetAdminService{
 		query: &budgetService{pool: pool}, api: api, safety: &postgresBudgetSafety{pool: pool},
 		store: store, owner: hex.EncodeToString(owner[:]), target: api.base, max: c.max, now: time.Now,
-	}, nil
+	}
+	service.keyBudgets = &keyBudgetAdminService{
+		query: &keyBudgetService{pool: pool}, api: api, store: store,
+		owner: service.owner, target: service.target, max: c.keyMax, now: time.Now,
+	}
+	return service, nil
 }

@@ -44,6 +44,20 @@ type budgetAdminAPI interface {
 	ResetSpend(context.Context, string, string) (*spendResetReceipt, error)
 }
 
+func (c *adminClient) CheckKeyBudgetUpdateSupport(ctx context.Context) error {
+	var schema struct {
+		Paths map[string]map[string]json.RawMessage `json:"paths"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/openapi.json", nil, &schema); err != nil {
+		return fmt.Errorf("无法确认当前 LiteLLM 是否公开 key 预算更新接口，尚未修改预算")
+	}
+	var operation map[string]json.RawMessage
+	if json.Unmarshal(schema.Paths["/key/update"]["post"], &operation) != nil || operation == nil {
+		return fmt.Errorf("当前 LiteLLM 未公开 POST /key/update，尚未修改预算")
+	}
+	return nil
+}
+
 type adminClient struct {
 	base   string
 	key    string
@@ -120,6 +134,14 @@ func (c *adminClient) Update(ctx context.Context, teamID, userID string, amount 
 		UserID string  `json:"user_id"`
 		Amount float64 `json:"max_budget_in_team"`
 	}{teamID, userID, amount}, nil)
+}
+
+func (c *adminClient) UpdateKeyBudget(ctx context.Context, teamID, keyAlias string, amount float64) error {
+	return c.request(ctx, http.MethodPost, "/key/update", struct {
+		TeamID    string  `json:"team_id"`
+		KeyAlias  string  `json:"key_alias"`
+		MaxBudget float64 `json:"max_budget"`
+	}{teamID, keyAlias, amount}, nil)
 }
 
 const memberSpendResetRoute = "/team/{team_id}/member/{user_id}/reset_spend"

@@ -560,6 +560,7 @@ func TestChangeStoreInvalidIDAndLockCancellation(t *testing.T) {
 
 func TestAdminConfig(t *testing.T) {
 	names := []string{"MCP_WRITE_AUTH_TOKEN", "LITELLM_URL", "LITELLM_MASTER_KEY", "MCP_CHANGE_DIR", "MCP_MAX_MEMBER_BUDGET"}
+	t.Setenv("MCP_MAX_KEY_BUDGET", "")
 	for _, name := range names {
 		t.Setenv(name, "")
 	}
@@ -567,6 +568,11 @@ func TestAdminConfig(t *testing.T) {
 	if config, err := loadAdminConfig(read); err != nil || config != nil {
 		t.Fatal("未配置应保持只读")
 	}
+	t.Setenv("MCP_MAX_KEY_BUDGET", "2500")
+	if _, err := loadAdminConfig(read); err == nil {
+		t.Fatal("只配置 key 额度上限时应识别为不完整的管理配置")
+	}
+	t.Setenv("MCP_MAX_KEY_BUDGET", "")
 	t.Setenv("LITELLM_URL", "http://localhost:4000")
 	if _, err := loadAdminConfig(read); err == nil {
 		t.Fatal("配置不完整不能静默忽略")
@@ -579,9 +585,24 @@ func TestAdminConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if config.keyMax != config.max {
+		t.Fatalf("未单独配置 key 上限时应沿用现有预算上限: key=%g member=%g", config.keyMax, config.max)
+	}
 	if _, err := config.service(nil); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("MCP_MAX_KEY_BUDGET", "2500")
+	config, err = loadAdminConfig(read)
+	if err != nil || config.keyMax != 2500 {
+		t.Fatalf("应接受独立 key 预算上限: config=%+v err=%v", config, err)
+	}
+	for _, max := range []string{"0", "-1", "NaN", "Inf", "bad"} {
+		t.Setenv("MCP_MAX_KEY_BUDGET", max)
+		if _, err := loadAdminConfig(read); err == nil {
+			t.Fatalf("key 上限无效时必须拒绝: %s", max)
+		}
+	}
+	t.Setenv("MCP_MAX_KEY_BUDGET", "")
 	t.Setenv("MCP_WRITE_AUTH_TOKEN", read)
 	if _, err := loadAdminConfig(read); err == nil {
 		t.Fatal("读写令牌不能相同")

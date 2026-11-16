@@ -1,6 +1,6 @@
 # LiteLLM MCP Server
 
-通过 MCP Streamable HTTP 向 Claude Code、OpenClaw 等客户端提供 LiteLLM 团队成员预算查询和受控修改工具。默认只读，配置独立管理凭证后才能预览和执行预算修改。
+通过 MCP Streamable HTTP 向 Claude Code、OpenClaw 等客户端提供 LiteLLM 团队成员及 key 预算查询和受控修改工具。默认只读，配置独立管理凭证后才能预览和执行预算修改。
 
 ## 提供的工具
 
@@ -37,6 +37,44 @@
 “完整数据”仅指此视图中的字段和记录，不包含其他表的数据。成员预算上限不是团队总预算，不应将成员预算简单相加后作为团队总预算。同一别名对应多个团队或同一邮箱前缀对应多个用户时，会返回所有匹配记录，可通过返回的 ID 区分；结果仍保留数据库中的完整邮箱，不会改写或合并记录。邮箱前缀唯一是业务约定，不是数据库保证，不能用于身份认证或权限判断。
 
 邮箱筛选使用参数化条件 `split_part(user_email, '@', 1) = $1`。数据量较大时，可在视图对应的底层表评估相同表达式的索引；普通邮箱列索引不一定适用于此表达式，不能直接在普通视图上创建索引。
+
+### `query_team_key_budget`
+
+按团队别名查询 LiteLLM 虚拟 key 的预算与消费。必填 `team_alias`，精确匹配；可选 `key_alias` 精确筛选。别名为空的 key 仍会出现在团队列表中。查询使用 `public.team_key_budget_view`，创建 SQL 见 [sql/team_key_budget_view.sql](sql/team_key_budget_view.sql)。
+
+| 返回字段 | 说明 |
+| --- | --- |
+| `team_id`、`team_alias` | 所属团队 |
+| `key_alias`、`key_name` | key 的显示名称；不包含 key/token 或其哈希 |
+| `user_id` | 关联用户；团队级 key 可以为空 |
+| `spend` | LiteLLM 记录的 key 消费；设置预算周期时对应当前周期 |
+| `key_max_budget` | key 自身配置的额度 |
+| `budget_table_max_budget` | key 关联预算记录中的额度 |
+| `effective_max_budget` | 两种额度中较小的非空值；两者都为空时为 `null` |
+| `budget_duration`、`budget_reset_at` | 预算周期与下次重置时间 |
+| `expires`、`blocked`、`created_at` | key 过期、禁用与创建信息 |
+
+默认每页返回 50 条，最多 100 条。通过 `page` 和 `page_size` 继续翻页；`count` 是当前页记录数，`has_more` 表示是否还有下一页。返回保留数据库空值，不会把未设置额度改成零。查询只读，服务账号只需对视图有 `SELECT` 权限；不要授予其读取 `LiteLLM_VerificationToken.token` 的权限。视图创建前应对照正在运行的 LiteLLM 数据库表结构核对字段。
+
+### `preview_team_key_budget_change`
+
+预览一个团队 key 的预算上限修改，不写入 LiteLLM。必须提供精确的 `team_alias`、`key_alias` 和正数 `max_budget`；别名必须在目标团队下唯一，LiteLLM 的 `/key/update` 也要求 key 别名能唯一定位。新额度不能超过管理员上限；不支持设为 0 或清除额度。
+
+返回旧 key 自身额度、关联预算额度、旧生效额度、新 key 额度及预期生效额度。若关联预算低于新 key 额度，关联预算仍限制最终生效额度。预览有效期为 10 分钟。示例：
+
+```json
+{"team_alias":"math","key_alias":"batch-a","max_budget":50}
+```
+
+### `apply_team_key_budget_change`
+
+先向管理员展示完整预览并取得明确确认，再调用：
+
+```json
+{"change_id":"替换为预览返回的编号","confirm":true}
+```
+
+执行时会重新核对目标和预算配置，只调用 LiteLLM `POST /key/update` 更新 `max_budget`，再从预算视图回读确认。不会更新 key 关联预算、消费、预算周期、重置时间或 TPM/RPM；同一编号不会重复提交。出现配置冲突或回读无法确认时，需要人工核查，不能自动创建新计划重试。服务会在预览和执行前检查部署的 `/openapi.json` 是否公开 `POST /key/update`；不支持该接口的部署会拒绝修改。
 
 
 ### `preview_member_budget_change`
@@ -155,9 +193,10 @@ WHERE COALESCE(tm.user_id, ''::text) <> 'default_user_id'::text;
 | `LITELLM_URL` | 启用修改时 | 无 | LiteLLM 管理 API 基址，例如 `https://litellm.example.com`；禁止 URL 内置凭证 |
 | `LITELLM_MASTER_KEY` | 启用修改时 | 无 | 服务端持有的 LiteLLM 管理密钥，不提供给模型 |
 | `MCP_MAX_MEMBER_BUDGET` | 启用修改时 | 无 | 每位成员允许设置的最大额度，有限正数；单位与 LiteLLM 预算一致，通常为美元 |
+| `MCP_MAX_KEY_BUDGET` | 否 | `MCP_MAX_MEMBER_BUDGET` | 每个 key 允许设置的最大额度，有限正数；未设置时沿用成员额度上限 |
 | `MCP_CHANGE_DIR` | 启用修改时 | 无 | 保存预览及执行记录的绝对目录，权限须为 `0700` |
 
-上述五个管理变量均不配置时保持原只读模式；只配置一部分会导致启动报错，避免误以为修改能力已启用。
+五个必填管理变量均不配置时保持原只读模式；只配置其中一部分会导致启动报错。`MCP_MAX_KEY_BUDGET` 是可选上限，单独设置时也会被视为不完整的管理配置。
 
 为数据库连接创建只读账号。只查询时仅授予目标视图读取权限；启用修改时按下面的说明补充用于安全校验的只读权限，仍然不授予数据库写权限。不要把数据库密码、管理密钥或 MCP 令牌写入镜像、源码或 Git。
 
@@ -178,7 +217,7 @@ MCP HTTP 地址为 `/mcp`。对外部署时，应使用 HTTPS 反向代理或受
 
 ### 管理权限与兼容性
 
-`MCP_AUTH_TOKEN` 只能查询，不能列出或调用两个管理工具。`MCP_WRITE_AUTH_TOKEN` 可查询并修改所有符合规则的团队；两种凭证使用独立 MCP 会话，不能借用管理会话绕过限制。此处没有实现按团队授权，也不能识别共享令牌背后的自然人；只向受信任管理员发放写令牌。
+`MCP_AUTH_TOKEN` 只能查询，不能列出或调用四个管理工具。`MCP_WRITE_AUTH_TOKEN` 可查询并修改所有符合规则的团队；两种凭证使用独立 MCP 会话，不能借用管理会话绕过限制。此处没有实现按团队授权，也不能识别共享令牌背后的自然人；只向受信任管理员发放写令牌。
 
 `confirm=true` 和工具描述不是人工审批系统。需要在 Claude/OpenClaw 客户端保留写工具审批，不要对执行工具开启自动批准。严格的多人审批需要另接身份认证及审批平台。
 
@@ -220,7 +259,8 @@ go run .
 构建镜像：
 
 ```bash
-docker build -t litellm-mcp-server .
+ docker buildx build --platform linux/amd64 -t registry-ze.tencentcloudcr.com/devops/litellm-mcp-server:v6 .
+docker push registry-ze.tencentcloudcr.com/devops/litellm-mcp-server:v6
 ```
 
 运行容器：
@@ -288,7 +328,7 @@ npx -y @modelcontextprotocol/inspector
 
 在 Inspector 中选择 Streamable HTTP，地址填写 `http://localhost:8080/mcp`，并添加 `Authorization: Bearer <MCP_AUTH_TOKEN>` 请求头。Inspector 终端不需要数据库连接串。
 
-测试修改时，改用独立 `MCP_WRITE_AUTH_TOKEN`，应看到三个工具。先调用 `preview_member_budget_change` 检查名单、额度、周期和风险，再人工确认调用 `apply_member_budget_change`；更换令牌后重新建立 MCP 连接。
+测试修改时，改用独立 `MCP_WRITE_AUTH_TOKEN`，应看到四个管理工具。修改成员预算先调用 `preview_member_budget_change`；修改 key 预算先调用 `preview_team_key_budget_change`。查看各自预览并人工确认后，分别调用对应的 `apply_...` 工具；更换令牌后重新建立 MCP 连接。
 
 调用 `query_team_member_budget` 时，可以只传团队别名 `{"team_alias":"研发团队"}`、完整邮箱 `{"user_email":"bob@example.com"}` 或前缀 `{"user_email":"bob"}`，也可以组合查询：
 

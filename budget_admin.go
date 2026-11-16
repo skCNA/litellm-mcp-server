@@ -57,14 +57,15 @@ type BudgetChangeOutput struct {
 }
 
 type budgetAdminService struct {
-	query  *budgetService
-	api    budgetAdminAPI
-	safety budgetSafety
-	store  *changeStore
-	owner  string
-	target string
-	max    float64
-	now    func() time.Time
+	query      *budgetService
+	api        budgetAdminAPI
+	safety     budgetSafety
+	store      *changeStore
+	keyBudgets *keyBudgetAdminService
+	owner      string
+	target     string
+	max        float64
+	now        func() time.Time
 }
 
 func (s *budgetAdminService) Preview(ctx context.Context, _ *mcp.CallToolRequest, input PreviewBudgetInput) (*mcp.CallToolResult, BudgetChangeOutput, error) {

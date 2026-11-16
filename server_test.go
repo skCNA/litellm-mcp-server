@@ -50,13 +50,22 @@ func TestBudgetToolInputSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("获取工具定义失败: %v", err)
 	}
-	if len(result.Tools) != 1 || result.Tools[0].Name != "query_team_member_budget" {
+	if len(result.Tools) != 2 {
 		t.Fatalf("工具列表不符合预期: %+v", result.Tools)
 	}
-	if !strings.Contains(result.Tools[0].Description, "public.team_member_budget_view") {
-		t.Fatalf("工具描述应与实际查询的 public 视图一致: %s", result.Tools[0].Description)
+	var memberTool *mcp.Tool
+	for i := range result.Tools {
+		if result.Tools[i].Name == "query_team_member_budget" {
+			memberTool = result.Tools[i]
+		}
 	}
-	data, err := json.Marshal(result.Tools[0].InputSchema)
+	if memberTool == nil {
+		t.Fatalf("缺少成员预算查询工具: %+v", result.Tools)
+	}
+	if !strings.Contains(memberTool.Description, "public.team_member_budget_view") {
+		t.Fatalf("工具描述应与实际查询的 public 视图一致: %s", memberTool.Description)
+	}
+	data, err := json.Marshal(memberTool.InputSchema)
 	if err != nil {
 		t.Fatalf("序列化入参定义失败: %v", err)
 	}
@@ -82,7 +91,7 @@ func TestBudgetToolInputSchema(t *testing.T) {
 		t.Fatalf("邮箱入参描述应说明前缀匹配规则: %s", data)
 	}
 
-	outputSchema, err := json.Marshal(result.Tools[0].OutputSchema)
+	outputSchema, err := json.Marshal(memberTool.OutputSchema)
 	if err != nil {
 		t.Fatalf("序列化返回结构失败: %v", err)
 	}

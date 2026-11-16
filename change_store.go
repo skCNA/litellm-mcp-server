@@ -196,6 +196,53 @@ func (s *changeStore) save(change *budgetChange) error {
 	return dir.Sync()
 }
 
+func (s *changeStore) loadKey(id string) (*keyBudgetChange, error) {
+	if !changeIDPattern.MatchString(id) {
+		return nil, fmt.Errorf("change_id 无效")
+	}
+	data, err := os.ReadFile(filepath.Join(s.dir, "key-"+id+".json"))
+	if err != nil {
+		return nil, fmt.Errorf("key 变更记录不存在或无法读取")
+	}
+	var change keyBudgetChange
+	if err := json.Unmarshal(data, &change); err != nil || change.ID != id || !validKeyBudgetChange(&change) {
+		return nil, fmt.Errorf("key 变更记录损坏，拒绝执行")
+	}
+	return &change, nil
+}
+
+func (s *changeStore) saveKey(change *keyBudgetChange) error {
+	change.UpdatedAt = time.Now().UTC()
+	data, err := json.MarshalIndent(change, "", "  ")
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(s.dir, ".key-change-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	if _, err = file.Write(data); err != nil {
+		return err
+	}
+	if err = file.Sync(); err != nil {
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(file.Name(), filepath.Join(s.dir, "key-"+change.ID+".json")); err != nil {
+		return err
+	}
+	dir, err := os.Open(s.dir)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
 // 锁覆盖执行与记录落盘，保证同目录的多进程不会重复提交；等待可被调用上下文取消。
 func (s *changeStore) lock(ctx context.Context) (func(), error) {
 	file, err := os.OpenFile(filepath.Join(s.dir, ".lock"), os.O_CREATE|os.O_RDWR, 0600)
