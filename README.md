@@ -1,6 +1,6 @@
 # LiteLLM MCP Server
 
-通过 MCP Streamable HTTP 向 Claude Code、OpenClaw 等客户端提供 LiteLLM 团队成员及 key 预算查询和受控修改工具。默认只读，配置独立管理凭证后才能预览和执行预算修改。
+通过 MCP Streamable HTTP 向 Claude Code、OpenClaw 等客户端提供 LiteLLM 团队成员及 key 预算、按模型 TPM 查询和受控修改工具。默认只读，配置独立管理凭证后才能执行预算或 TPM 修改。
 
 ## 提供的工具
 
@@ -55,6 +55,12 @@
 | `expires`、`blocked`、`created_at` | key 过期、禁用与创建信息 |
 
 默认每页返回 50 条，最多 100 条。通过 `page` 和 `page_size` 继续翻页；`count` 是当前页记录数，`has_more` 表示是否还有下一页。返回保留数据库空值，不会把未设置额度改成零。查询只读，服务账号只需对视图有 `SELECT` 权限；不要授予其读取 `LiteLLM_VerificationToken.token` 的权限。视图创建前应对照正在运行的 LiteLLM 数据库表结构核对字段。
+
+### `query_team_key_model_tpm_limit`
+
+只读查询团队下 key 的模型 TPM 配置。必填 `team_alias`，精确匹配；可选 `key_alias` 精确筛选。省略 `key_alias` 时按页返回团队所有 key。每条记录包含 key 的完整 `key_model_tpm_limit` 映射和团队的完整 `team_model_tpm_limit` 映射；空映射 `{}` 表示对应层没有配置按模型 TPM 限制。工具不需要管理令牌，不返回 key/token 或其哈希。
+
+分页参数与 `query_team_key_budget` 相同：默认每页 50 条，最多 100 条；使用 `page`、`page_size` 翻页。查询读取 `public.team_key_budget_view` 的 `key_model_tpm_limit` 和 `team_model_tpm_limit` 两列，因此需先执行上方提到的更新视图 SQL。
 
 ### `preview_team_key_budget_change`
 

@@ -58,8 +58,8 @@ func TestAdminMCPHTTPIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 		if token == writeToken {
-			if len(list.Tools) != 8 {
-				t.Fatalf("管理令牌应看到八个工具: %+v", list.Tools)
+			if len(list.Tools) != 9 {
+				t.Fatalf("管理令牌应看到九个工具: %+v", list.Tools)
 			}
 			for _, tool := range list.Tools {
 				if tool.Name != "preview_member_budget_change" && tool.Name != "preview_team_key_budget_change" &&
@@ -151,13 +151,20 @@ func TestAdminMCPHTTPIsolation(t *testing.T) {
 				t.Fatalf("MCP 执行失败: %+v %v", result, err)
 			}
 		} else {
-			if len(list.Tools) != 2 {
-				t.Fatalf("只读令牌不能发现管理工具: %+v", list.Tools)
+			if len(list.Tools) != 3 {
+				t.Fatalf("只读令牌应看到三个查询工具: %+v", list.Tools)
 			}
 			foundKeyQuery := false
+			foundKeyTPMQuery := false
 			for _, tool := range list.Tools {
 				if tool.Name == "query_team_key_budget" {
 					foundKeyQuery = true
+				}
+				if tool.Name == "query_team_key_model_tpm_limit" {
+					foundKeyTPMQuery = true
+					if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+						t.Fatal("TPM 查询必须标记为只读")
+					}
 				}
 				if tool.Name == "preview_member_budget_change" || tool.Name == "apply_member_budget_change" {
 					t.Fatalf("只读令牌不应发现管理工具: %s", tool.Name)
@@ -165,6 +172,9 @@ func TestAdminMCPHTTPIsolation(t *testing.T) {
 			}
 			if !foundKeyQuery {
 				t.Fatal("只读令牌应能使用 key 预算查询工具")
+			}
+			if !foundKeyTPMQuery {
+				t.Fatal("只读令牌应能使用 key 模型 TPM 查询工具")
 			}
 			for _, name := range []string{"preview_member_budget_change", "apply_member_budget_change"} {
 				result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: map[string]any{}})

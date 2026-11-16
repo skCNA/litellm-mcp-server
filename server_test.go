@@ -50,7 +50,7 @@ func TestBudgetToolInputSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("获取工具定义失败: %v", err)
 	}
-	if len(result.Tools) != 2 {
+	if len(result.Tools) != 3 {
 		t.Fatalf("工具列表不符合预期: %+v", result.Tools)
 	}
 	var memberTool *mcp.Tool

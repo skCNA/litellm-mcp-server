@@ -44,6 +44,12 @@ func newMCPServer(pool budgetQuerier) *mcp.Server {
 			"不返回 key/token 或其哈希。数据仅来自 " + keyBudgetViewName + "。",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, (&keyBudgetService{pool: pool}).QueryTeamKeyBudget)
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "query_team_key_model_tpm_limit",
+		Description: "只读查询团队 key 的按模型 TPM 限制。team_alias 必填并精确匹配，可选 key_alias 精确筛选；" +
+			"按页返回 key_model_tpm_limit 与 team_model_tpm_limit 完整映射。空映射表示该层未配置按模型 TPM 限制；不返回 key/token 或其哈希。",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, (&keyModelTPMQueryService{pool: pool}).QueryTeamKeyModelTPMLimit)
 	return server
 }
 
